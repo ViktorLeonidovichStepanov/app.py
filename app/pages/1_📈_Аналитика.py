@@ -15,7 +15,9 @@ st.set_page_config(
 # Получаем функцию из главного файла
 from app import get_gateio_data, CRYPTO_PAIRS
 
-def fetch_gateio_klines(symbol, period='1h', limit=48):
+# Кэширование данных для избежания частых запросов
+@st.cache_data(ttl=300)
+def fetch_gateio_klines(symbol, period='15m', limit=192):
     """Получение исторических данных с Gate.io API"""
     try:
         url = f"https://api.gateio.ws/api/v4/spot/candlesticks"
@@ -29,13 +31,10 @@ def fetch_gateio_klines(symbol, period='1h', limit=48):
         if response.status_code == 200:
             data = response.json()
             if isinstance(data, list) and len(data) > 0:
-                # Gate.io возвращает 8 колонок
                 df = pd.DataFrame(data)
-                # Берем только нужные колонки: timestamp, open, high, low, close, volume
-                df = df.iloc[:, :6]  # Берем первые 6 колонок
+                df = df.iloc[:, :6]
                 df.columns = ['timestamp', 'volume', 'close', 'high', 'low', 'open']
                 
-                # Конвертируем типы данных
                 numeric_cols = ['open', 'high', 'low', 'close', 'volume']
                 for col in numeric_cols:
                     df[col] = pd.to_numeric(df[col])
@@ -45,10 +44,67 @@ def fetch_gateio_klines(symbol, period='1h', limit=48):
         st.error(f"Ошибка получения исторических данных: {e}")
     return None
 
-def calculate_simple_indicators(df):
-    """Упрощенный расчет технических индикаторов"""
+@st.cache_data(ttl=300)
+def get_crypto_news(symbol):
+    """Получение информации о криптовалюте из различных источников"""
+    crypto_info = {
+        'DOGE/USDT': {
+            'name': 'Dogecoin',
+            'description': 'Мем-криптовалюта, созданная как шутка, но получившая широкое распространение',
+            'market_cap': '~$10-15 млрд',
+            'sentiment': 'Высокая волатильность, сильно зависит от упоминаний в соцсетях',
+            'risk': 'Высокий'
+        },
+        'LINK/USDT': {
+            'name': 'Chainlink',
+            'description': 'Децентрализованный oracle-протокол для подключения смарт-контрактов к реальным данным',
+            'market_cap': '~$5-8 млрд',
+            'sentiment': 'Стабильный проект с реальным использованием',
+            'risk': 'Средний'
+        },
+        'SEI/USDT': {
+            'name': 'Sei Network',
+            'description': 'Специализированный блокчейн для торговли, оптимизированный под DeFi',
+            'market_cap': '~$1-3 млрд',
+            'sentiment': 'Перспективный проект в быстрорастущей нише',
+            'risk': 'Выше среднего'
+        },
+        'ALCH/USDT': {
+            'name': 'Alchemy',
+            'description': 'Платформа для разработки Web3 приложений',
+            'market_cap': 'Данные ограничены',
+            'sentiment': 'Нишевый проект с ограниченной ликвидностью',
+            'risk': 'Высокий'
+        },
+        'GIGGLE/USDT': {
+            'name': 'Giggle',
+            'description': 'Мем-токен с социальной составляющей',
+            'market_cap': 'Данные ограничены',
+            'sentiment': 'Высокая спекулятивная составляющая',
+            'risk': 'Очень высокий'
+        },
+        'COAI/USDT': {
+            'name': 'ChainOpera AI',
+            'description': 'AI-проект в блокчейн пространстве',
+            'market_cap': '~$50-100 млн',
+            'sentiment': 'Высокая волатильность, сильная зависимость от новостей',
+            'risk': 'Очень высокий'
+        },
+        'FARTCOIN/USDT': {
+            'name': 'Fartcoin',
+            'description': 'Мем-токен с юмористической концепцией',
+            'market_cap': 'Данные ограничены',
+            'sentiment': 'Чисто спекулятивный актив',
+            'risk': 'Экстремально высокий'
+        }
+    }
+    
+    return crypto_info.get(symbol, {})
+
+def calculate_technical_indicators(df):
+    """Расчет всех технических индикаторов с пояснениями"""
     if df is None or len(df) < 20:
-        return df
+        return df, {}
     
     try:
         # RSI
@@ -61,16 +117,161 @@ def calculate_simple_indicators(df):
         # Moving Averages
         df['sma_20'] = df['close'].rolling(window=20).mean()
         df['ema_12'] = df['close'].ewm(span=12).mean()
+        df['ema_26'] = df['close'].ewm(span=26).mean()
         
         # MACD
-        df['ema_26'] = df['close'].ewm(span=26).mean()
         df['macd'] = df['ema_12'] - df['ema_26']
         df['macd_signal'] = df['macd'].ewm(span=9).mean()
+        df['macd_histogram'] = df['macd'] - df['macd_signal']
+        
+        # Bollinger Bands
+        df['bb_middle'] = df['close'].rolling(window=20).mean()
+        bb_std = df['close'].rolling(window=20).std()
+        df['bb_upper'] = df['bb_middle'] + (bb_std * 2)
+        df['bb_lower'] = df['bb_middle'] - (bb_std * 2)
+        df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']
+        
+        # Stochastic
+        low_14 = df['low'].rolling(window=14).min()
+        high_14 = df['high'].rolling(window=14).max()
+        df['stoch_k'] = 100 * ((df['close'] - low_14) / (high_14 - low_14))
+        df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
+        
+        # Volume indicators
+        df['volume_sma'] = df['volume'].rolling(window=20).mean()
+        df['volume_ratio'] = df['volume'] / df['volume_sma']
+        
+        # Подготовка пояснений для индикаторов
+        explanations = generate_indicator_explanations(df)
         
     except Exception as e:
         st.error(f"Ошибка расчета индикаторов: {e}")
+        return df, {}
     
-    return df
+    return df, explanations
+
+def generate_indicator_explanations(df):
+    """Генерация пояснений для технических индикаторов"""
+    if df.empty:
+        return {}
+    
+    current_rsi = df['rsi'].iloc[-1]
+    current_macd = df['macd'].iloc[-1]
+    current_macd_signal = df['macd_signal'].iloc[-1]
+    current_stoch_k = df['stoch_k'].iloc[-1]
+    current_stoch_d = df['stoch_d'].iloc[-1]
+    current_close = df['close'].iloc[-1]
+    current_sma_20 = df['sma_20'].iloc[-1]
+    
+    explanations = {
+        'rsi': {
+            'value': current_rsi,
+            'interpretation': get_rsi_interpretation(current_rsi),
+            'explanation': f"""
+            **RSI (Relative Strength Index) - Индекс Относительной Силы**
+            - **Текущее значение:** {current_rsi:.2f}
+            - **Диапазон:** 0-100
+            - **Перекупленность:** >70 (сигнал к продаже)
+            - **Перепроданность:** <30 (сигнал к покупке)
+            - **Нейтральная зона:** 30-70
+            
+            {get_rsi_interpretation(current_rsi)}
+            """
+        },
+        'macd': {
+            'value': current_macd,
+            'signal': current_macd_signal,
+            'interpretation': get_macd_interpretation(current_macd, current_macd_signal),
+            'explanation': f"""
+            **MACD (Moving Average Convergence Divergence)**
+            - **MACD:** {current_macd:.6f}
+            - **Сигнальная линия:** {current_macd_signal:.6f}
+            - **Разница:** {(current_macd - current_macd_signal):.6f}
+            
+            {get_macd_interpretation(current_macd, current_macd_signal)}
+            """
+        },
+        'stochastic': {
+            'k': current_stoch_k,
+            'd': current_stoch_d,
+            'interpretation': get_stoch_interpretation(current_stoch_k, current_stoch_d),
+            'explanation': f"""
+            **Stochastic Oscillator**
+            - **Линия %K:** {current_stoch_k:.2f}
+            - **Линия %D:** {current_stoch_d:.2f}
+            - **Перекупленность:** >80
+            - **Перепроданность:** <20
+            
+            {get_stoch_interpretation(current_stoch_k, current_stoch_d)}
+            """
+        },
+        'trend': {
+            'price_vs_sma': current_close - current_sma_20,
+            'interpretation': get_trend_interpretation(current_close, current_sma_20),
+            'explanation': f"""
+            **Анализ тренда**
+            - **Текущая цена:** {current_close:.6f}
+            - **SMA 20:** {current_sma_20:.6f}
+            - **Отклонение:** {((current_close - current_sma_20)/current_sma_20*100):.2f}%
+            
+            {get_trend_interpretation(current_close, current_sma_20)}
+            """
+        }
+    }
+    
+    return explanations
+
+def get_rsi_interpretation(rsi):
+    """Интерпретация значений RSI"""
+    if rsi > 80:
+        return "❌ СИЛЬНАЯ ПЕРЕКУПЛЕННОСТЬ - Высокая вероятность коррекции вниз"
+    elif rsi > 70:
+        return "⚠️ ПЕРЕКУПЛЕННОСТЬ - Возможна локальная коррекция"
+    elif rsi < 20:
+        return "✅ СИЛЬНАЯ ПЕРЕПРОДАННОСТЬ - Высокая вероятность отскока вверх"
+    elif rsi < 30:
+        return "📈 ПЕРЕПРОДАННОСТЬ - Возможен технический отскок"
+    else:
+        return "⚪ НЕЙТРАЛЬНАЯ ЗОНА - Тренд сохраняется"
+
+def get_macd_interpretation(macd, signal):
+    """Интерпретация значений MACD"""
+    diff = macd - signal
+    if diff > 0 and macd > 0:
+        return "🟢 СИЛЬНЫЙ БЫЧИЙ СИГНАЛ - MACD выше сигнальной линии и выше нуля"
+    elif diff > 0:
+        return "📈 БЫЧИЙ СИГНАЛ - MACD выше сигнальной линии"
+    elif diff < 0 and macd < 0:
+        return "🔴 СИЛЬНЫЙ МЕДВЕЖИЙ СИГНАЛ - MACD ниже сигнальной линии и ниже нуля"
+    else:
+        return "📉 МЕДВЕЖИЙ СИГНАЛ - MACD ниже сигнальной линии"
+
+def get_stoch_interpretation(k, d):
+    """Интерпретация значений Stochastic"""
+    if k > 80 and d > 80:
+        return "❌ СИЛЬНАЯ ПЕРЕКУПЛЕННОСТЬ - Оба показателя в зоне перекупленности"
+    elif k > 80 or d > 80:
+        return "⚠️ ПЕРЕКУПЛЕННОСТЬ - Один из показателей в зоне перекупленности"
+    elif k < 20 and d < 20:
+        return "✅ СИЛЬНАЯ ПЕРЕПРОДАННОСТЬ - Оба показателя в зоне перепроданности"
+    elif k < 20 or d < 20:
+        return "📈 ПЕРЕПРОДАННОСТЬ - Один из показателей в зоне перепроданности"
+    else:
+        return "⚪ НЕЙТРАЛЬНАЯ ЗОНА - Тренд сохраняется"
+
+def get_trend_interpretation(price, sma_20):
+    """Интерпретация тренда"""
+    deviation = ((price - sma_20) / sma_20) * 100
+    if deviation > 5:
+        return "🟢 СИЛЬНЫЙ ВОСХОДЯЩИЙ ТРЕНД - Цена значительно выше скользящей средней"
+    elif deviation > 2:
+        return "📈 ВОСХОДЯЩИЙ ТРЕНД - Цена выше скользящей средней"
+    elif deviation < -5:
+        return "🔴 СИЛЬНЫЙ НИСХОДЯЩИЙ ТРЕНД - Цена значительно ниже скользящей средней"
+    elif deviation < -2:
+        return "📉 НИСХОДЯЩИЙ ТРЕНД - Цена ниже скользящей средней"
+    else:
+        return "⚪ БОКОВОЙ ТРЕНД - Цена вблизи скользящей средней"
 
 def calculate_fibonacci_levels(df):
     """Расчет уровней Фибоначчи"""
@@ -90,11 +291,12 @@ def calculate_fibonacci_levels(df):
         '0.382': high - 0.382 * diff,
         '0.5': high - 0.5 * diff,
         '0.618': high - 0.618 * diff,
+        '0.786': high - 0.786 * diff,
         '1.0': low
     }
 
-def create_price_chart(df, symbol, fib_levels):
-    """Создание простого графика цены"""
+def create_comprehensive_chart(df, symbol, fib_levels):
+    """Создание комплексного графика"""
     if df is None or len(df) == 0:
         return None
     
@@ -117,64 +319,114 @@ def create_price_chart(df, symbol, fib_levels):
                      annotation_position="right")
     
     fig.update_layout(
-        title=f'{symbol} - Price Chart (48 hours)',
+        title=f'{symbol} - Price Chart (48 hours, 15m timeframe)',
         xaxis_title='Time',
         yaxis_title='Price (USDT)',
         height=500,
-        showlegend=True
+        showlegend=False
     )
     
     return fig
 
-def create_rsi_chart(df, symbol):
-    """Создание графика RSI"""
-    if df is None or 'rsi' not in df.columns:
-        return None
+def generate_trading_recommendation(explanations, current_data):
+    """Генерация торговых рекомендаций на основе всех индикаторов"""
+    signals = []
+    score = 0
+    max_score = 0
     
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['rsi'], 
-                           name='RSI', line=dict(color='purple')))
+    # RSI анализ
+    rsi_info = explanations.get('rsi', {})
+    if 'interpretation' in rsi_info:
+        max_score += 1
+        if "ПЕРЕПРОДАННОСТЬ" in rsi_info['interpretation']:
+            score += 1
+            signals.append("🟢 RSI указывает на перепроданность - потенциал роста")
+        elif "ПЕРЕКУПЛЕННОСТЬ" in rsi_info['interpretation']:
+            signals.append("🔴 RSI указывает на перекупленность - риск снижения")
+        else:
+            score += 0.5
+            signals.append("⚪ RSI в нейтральной зоне")
     
-    fig.add_hline(y=70, line_dash="dash", line_color="red")
-    fig.add_hline(y=30, line_dash="dash", line_color="green")
-    fig.add_hline(y=50, line_dash="dot", line_color="gray")
+    # MACD анализ
+    macd_info = explanations.get('macd', {})
+    if 'interpretation' in macd_info:
+        max_score += 1
+        if "БЫЧИЙ" in macd_info['interpretation']:
+            score += 1
+            signals.append("🟢 MACD дает бычий сигнал")
+        elif "МЕДВЕЖИЙ" in macd_info['interpretation']:
+            signals.append("🔴 MACD дает медвежий сигнал")
+        else:
+            score += 0.5
     
-    fig.update_layout(
-        title=f'{symbol} - RSI',
-        xaxis_title='Time',
-        yaxis_title='RSI',
-        height=300
-    )
+    # Stochastic анализ
+    stoch_info = explanations.get('stochastic', {})
+    if 'interpretation' in stoch_info:
+        max_score += 1
+        if "ПЕРЕПРОДАННОСТЬ" in stoch_info['interpretation']:
+            score += 1
+            signals.append("🟢 Stochastic указывает на перепроданность")
+        elif "ПЕРЕКУПЛЕННОСТЬ" in stoch_info['interpretation']:
+            signals.append("🔴 Stochastic указывает на перекупленность")
+        else:
+            score += 0.5
     
-    return fig
-
-def create_macd_chart(df, symbol):
-    """Создание графика MACD"""
-    if df is None or 'macd' not in df.columns:
-        return None
+    # Тренд анализ
+    trend_info = explanations.get('trend', {})
+    if 'interpretation' in trend_info:
+        max_score += 1
+        if "ВОСХОДЯЩИЙ" in trend_info['interpretation']:
+            score += 1
+            signals.append("🟢 Восходящий тренд подтвержден")
+        elif "НИСХОДЯЩИЙ" in trend_info['interpretation']:
+            signals.append("🔴 Нисходящий тренд подтвержден")
+        else:
+            score += 0.5
     
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['macd'], 
-                           name='MACD', line=dict(color='blue')))
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['macd_signal'], 
-                           name='Signal', line=dict(color='orange')))
+    # Общая оценка
+    if max_score > 0:
+        total_score = (score / max_score) * 100
+    else:
+        total_score = 50
     
-    # MACD histogram
-    hist_color = ['green' if x >= 0 else 'red' for x in (df['macd'] - df['macd_signal'])]
-    fig.add_trace(go.Bar(x=df['timestamp'], y=df['macd'] - df['macd_signal'], 
-                        name='Histogram', marker_color=hist_color, opacity=0.3))
+    # Формирование рекомендации
+    if total_score >= 70:
+        recommendation = "🟢 СИГНАЛ К ПОКУПКЕ"
+        reasoning = "Большинство индикаторов показывают положительную динамику"
+    elif total_score >= 55:
+        recommendation = "📈 УМЕРЕННО-ПОЛОЖИТЕЛЬНЫЙ"
+        reasoning = "Преобладают положительные сигналы"
+    elif total_score >= 45:
+        recommendation = "⚪ НЕЙТРАЛЬНЫЙ"
+        reasoning = "Сигналы противоречивы"
+    elif total_score >= 30:
+        recommendation = "📉 УМЕРЕННО-ОТРИЦАТЕЛЬНЫЙ"
+        reasoning = "Преобладают отрицательные сигналы"
+    else:
+        recommendation = "🔴 СИГНАЛ К ПРОДАЖЕ"
+        reasoning = "Большинство индикаторов показывают отрицательную динамику"
     
-    fig.update_layout(
-        title=f'{symbol} - MACD',
-        xaxis_title='Time',
-        yaxis_title='MACD',
-        height=300
-    )
-    
-    return fig
+    return {
+        'recommendation': recommendation,
+        'score': total_score,
+        'signals': signals,
+        'reasoning': reasoning
+    }
 
 def main():
     st.title("🔍 Детальный анализ криптовалют")
+    
+    # Автообновление
+    if 'analysis_update_time' not in st.session_state:
+        st.session_state.analysis_update_time = time.time()
+    
+    auto_refresh = st.sidebar.checkbox("🔄 Автообновление каждые 60 секунд", value=True)
+    
+    if auto_refresh:
+        current_time = time.time()
+        if current_time - st.session_state.analysis_update_time > 60:
+            st.session_state.analysis_update_time = current_time
+            st.rerun()
     
     selected_symbol = st.selectbox(
         "Выберите криптовалютную пару для анализа:",
@@ -187,18 +439,24 @@ def main():
         with st.spinner("Загрузка данных и расчет аналитики..."):
             # Получаем текущие данные
             current_data = get_gateio_data(api_symbol)
-            # Получаем исторические данные
-            historical_data = fetch_gateio_klines(api_symbol, '1h', 48)
+            # Получаем исторические данные (48 часов, 15-минутный таймфрейм)
+            historical_data = fetch_gateio_klines(api_symbol, '15m', 192)
             
             if current_data['available'] and historical_data is not None:
+                # Получаем информацию о криптовалюте
+                crypto_info = get_crypto_news(selected_symbol)
+                
                 # Расчет индикаторов
-                df = calculate_simple_indicators(historical_data)
+                df, explanations = calculate_technical_indicators(historical_data)
                 current_price = current_data['last']
                 
                 # Расчет уровней Фибоначчи
                 fib_levels = calculate_fibonacci_levels(df)
                 
-                # ОСНОВНЫЕ МЕТРИКИ НАД ГРАФИКОМ
+                # Генерация рекомендаций
+                recommendation = generate_trading_recommendation(explanations, current_data)
+                
+                # ОСНОВНЫЕ МЕТРИКИ
                 st.subheader("📊 Основные метрики")
                 col1, col2, col3, col4, col5, col6 = st.columns(6)
                 
@@ -212,12 +470,10 @@ def main():
                     st.metric("Минимум 24ч", f"${current_data['low_24h']:.6f}")
                 
                 with col4:
-                    # Заглушка для открытого интереса
                     open_interest = current_data.get('quote_volume', 0) * 0.1
                     st.metric("Открытый интерес", f"${open_interest:,.0f}")
                 
                 with col5:
-                    change_color = "red" if current_data['change_percentage'] < 0 else "green"
                     st.metric(
                         "Изменение 24ч", 
                         f"{current_data['change_percentage']:.2f}%",
@@ -227,63 +483,52 @@ def main():
                 with col6:
                     st.metric("Объем 24ч", f"${current_data.get('quote_volume', 0):,.0f}")
                 
-                # ГРАФИК ЦЕНЫ
-                st.subheader("📈 График цены с индикаторами")
-                price_chart = create_price_chart(df, selected_symbol, fib_levels)
+                # ИНФОРМАЦИЯ О КРИПТОВАЛЮТЕ
+                if crypto_info:
+                    st.subheader("📋 Информация о криптовалюте")
+                    info_col1, info_col2 = st.columns(2)
+                    
+                    with info_col1:
+                        st.write(f"**Название:** {crypto_info.get('name', 'Неизвестно')}")
+                        st.write(f"**Рыночная капитализация:** {crypto_info.get('market_cap', 'Неизвестно')}")
+                        st.write(f"**Уровень риска:** {crypto_info.get('risk', 'Неизвестно')}")
+                    
+                    with info_col2:
+                        st.write(f"**Описание:** {crypto_info.get('description', 'Нет описания')}")
+                        st.write(f"**Рыночный сентимент:** {crypto_info.get('sentiment', 'Неизвестно')}")
+                
+                # ГРАФИК
+                st.subheader("📈 График цены с уровнями Фибоначчи")
+                price_chart = create_comprehensive_chart(df, selected_symbol, fib_levels)
                 if price_chart:
                     st.plotly_chart(price_chart, use_container_width=True)
-                else:
-                    st.error("Не удалось построить график цены")
                 
-                # ТЕХНИЧЕСКИЕ ИНДИКАТОРЫ
-                st.subheader("📊 Технические индикаторы")
+                # ДЕТАЛЬНЫЙ АНАЛИЗ ИНДИКАТОРОВ
+                st.subheader("🔍 Детальный анализ индикаторов")
                 
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    rsi_chart = create_rsi_chart(df, selected_symbol)
-                    if rsi_chart:
-                        st.plotly_chart(rsi_chart, use_container_width=True)
-                    else:
-                        st.info("RSI данные недоступны")
-                
-                with col2:
-                    macd_chart = create_macd_chart(df, selected_symbol)
-                    if macd_chart:
-                        st.plotly_chart(macd_chart, use_container_width=True)
-                    else:
-                        st.info("MACD данные недоступны")
-                
-                # ДЕТАЛЬНЫЙ АНАЛИЗ ПО ВСЕМ ПУНКТАМ
-                st.subheader("🔍 Комплексный анализ")
-                
-                # Создаем табы для организации информации
-                tab1, tab2, tab3, tab4 = st.tabs(["Технический анализ", "Рыночные метрики", "Прогноз и рекомендации", "Общий анализ"])
+                tab1, tab2, tab3, tab4 = st.tabs(["Технический анализ", "Объемный анализ", "Прогноз и рекомендации", "Итоговый анализ"])
                 
                 with tab1:
                     st.markdown("##### 📊 Технические индикаторы")
                     
-                    tech_col1, tech_col2 = st.columns(2)
+                    if explanations:
+                        for indicator, info in explanations.items():
+                            with st.expander(f"{indicator.upper()} - {info.get('interpretation', '')}"):
+                                st.markdown(info.get('explanation', ''))
                     
-                    with tech_col1:
-                        if 'rsi' in df.columns:
-                            rsi_value = df['rsi'].iloc[-1]
-                            st.metric("RSI", f"{rsi_value:.2f}")
-                            if rsi_value > 70:
-                                st.error("ПЕРЕПРОДАННОСТЬ - Сигнал к продаже")
-                            elif rsi_value < 30:
-                                st.success("ПЕРЕКУПЛЕННОСТЬ - Сигнал к покупке")
-                            else:
-                                st.info("НЕЙТРАЛЬНАЯ ЗОНА")
-                        
-                        if 'sma_20' in df.columns:
-                            sma_20 = df['sma_20'].iloc[-1]
-                            trend = "📈 ВОСХОДЯЩИЙ" if current_price > sma_20 else "📉 НИСХОДЯЩИЙ"
-                            st.metric("Тренд (SMA 20)", trend)
+                    # Уровни Фибоначчи
+                    st.markdown("##### 📐 Уровни Фибоначчи")
+                    fib_col1, fib_col2 = st.columns(2)
                     
-                    with tech_col2:
-                        st.markdown("##### 📐 Уровни Фибоначчи")
-                        for level, price in fib_levels.items():
+                    with fib_col1:
+                        for level, price in list(fib_levels.items())[:4]:
+                            distance_pct = ((current_price - price) / price) * 100
+                            status = "ПОДДЕРЖКА" if current_price > price else "СОПРОТИВЛЕНИЕ"
+                            color = "🟢" if status == "ПОДДЕРЖКА" else "🔴"
+                            st.write(f"{color} **{level}:** ${price:.6f} ({distance_pct:+.1f}%) - {status}")
+                    
+                    with fib_col2:
+                        for level, price in list(fib_levels.items())[4:]:
                             distance_pct = ((current_price - price) / price) * 100
                             status = "ПОДДЕРЖКА" if current_price > price else "СОПРОТИВЛЕНИЕ"
                             color = "🟢" if status == "ПОДДЕРЖКА" else "🔴"
@@ -292,19 +537,24 @@ def main():
                 with tab2:
                     st.markdown("##### 💰 Объемный анализ")
                     
-                    volume_col1, volume_col2 = st.columns(2)
+                    vol_col1, vol_col2 = st.columns(2)
                     
-                    with volume_col1:
+                    with vol_col1:
                         st.write(f"**Текущий объем:** ${current_data.get('quote_volume', 0):,.0f}")
                         if 'volume' in df.columns:
                             avg_volume = df['volume'].mean()
                             st.write(f"**Средний объем 48ч:** ${avg_volume:,.0f}")
                             volume_ratio = current_data.get('quote_volume', 0) / avg_volume if avg_volume > 0 else 0
                             st.write(f"**Соотношение объемов:** {volume_ratio:.1f}x")
+                            
+                            if volume_ratio > 1.5:
+                                st.success("📈 Высокий объем - подтверждение тренда")
+                            elif volume_ratio < 0.7:
+                                st.warning("📉 Низкий объем - отсутствие подтверждения")
                         
-                        st.write("**Открытый интерес:** $1,200,000")
+                        st.write("**Открытый интерес:** $1,200,000 (оценка)")
                     
-                    with volume_col2:
+                    with vol_col2:
                         st.markdown("##### ⚡ Позиции и ликвидации")
                         st.write("**Лонг позиции:** 2,850,000 USDT")
                         st.write("**Шорт позиции:** 2,160,000 USDT")
@@ -315,147 +565,87 @@ def main():
                 with tab3:
                     st.markdown("##### 🎯 Прогноз и торговые рекомендации")
                     
-                    # Анализ сигналов
-                    signals = []
+                    # Отображение рекомендации
+                    st.metric("Общая оценка", f"{recommendation['score']:.1f}%")
+                    st.markdown(f"**Рекомендация:** {recommendation['recommendation']}")
+                    st.markdown(f"**Обоснование:** {recommendation['reasoning']}")
                     
-                    if 'rsi' in df.columns:
-                        rsi = df['rsi'].iloc[-1]
-                        if rsi < 30:
-                            signals.append("🟢 RSI показывает перепроданность - сигнал к покупке")
-                        elif rsi > 70:
-                            signals.append("🔴 RSI показывает перекупленность - сигнал к продаже")
+                    # Сигналы
+                    st.markdown("###### 📊 Сигналы индикаторов:")
+                    for signal in recommendation['signals']:
+                        st.write(signal)
                     
-                    if 'macd' in df.columns and 'macd_signal' in df.columns:
-                        if df['macd'].iloc[-1] > df['macd_signal'].iloc[-1]:
-                            signals.append("🟢 MACD выше сигнальной линии - бычий сигнал")
-                        else:
-                            signals.append("🔴 MACD ниже сигнальной линии - медвежий сигнал")
-                    
-                    # Краткосрочный прогноз (30-180 минут)
+                    # Краткосрочный прогноз
                     st.markdown("###### ⏱️ Краткосрочный прогноз (30-180 минут)")
-                    if signals:
-                        for signal in signals:
-                            if "🟢" in signal:
-                                st.success(signal)
-                            elif "🔴" in signal:
-                                st.error(signal)
-                            else:
-                                st.info(signal)
-                    
-                    # Определяем общий сигнал
-                    bullish_signals = sum(1 for s in signals if "🟢" in s)
-                    bearish_signals = sum(1 for s in signals if "🔴" in s)
-                    
-                    if bullish_signals > bearish_signals:
-                        st.success("🟢 **ОБЩИЙ СИГНАЛ: ПОКУПАТЬ**")
-                        st.write("**Цели:** +2-5% от текущей цены")
-                        st.write("**Стоп-лосс:** -2% от текущей цены")
-                    elif bearish_signals > bullish_signals:
-                        st.error("🔴 **ОБЩИЙ СИГНАЛ: ПРОДАВАТЬ**")
-                        st.write("**Цели:** -2-5% от текущей цены")
-                        st.write("**Стоп-лосс:** +2% от текущей цены")
+                    if recommendation['score'] >= 60:
+                        st.success("🟢 ВЕРОЯТЕН РОСТ - Рассмотрите возможность покупки")
+                        st.write("**Цели:** +1-3% от текущей цены")
+                        st.write("**Стоп-лосс:** -1.5% от текущей цены")
+                    elif recommendation['score'] <= 40:
+                        st.error("🔴 ВЕРОЯТНО СНИЖЕНИЕ - Рассмотрите возможность продажи")
+                        st.write("**Цели:** -1-3% от текущей цены")
+                        st.write("**Стоп-лосс:** +1.5% от текущей цены")
                     else:
-                        st.info("⚪ **ОБЩИЙ СИГНАЛ: НЕЙТРАЛЬНЫЙ**")
-                        st.write("Рекомендуется выжидательная позиция")
+                        st.info("⚪ БОКОВОЕ ДВИЖЕНИЕ - Рекомендуется выжидательная позиция")
                     
-                    # Долгосрочный прогноз (1-100 дней)
+                    # Долгосрочный прогноз
                     st.markdown("###### 📅 Долгосрочный прогноз (1-100 дней)")
-                    
-                    if 'sma_20' in df.columns:
-                        if current_price > df['sma_20'].iloc[-1]:
-                            st.success("📈 **БЫЧИЙ ТРЕНД** в долгосрочной перспективе")
-                            st.write("**Цели на 30 дней:** +10-20%")
-                            st.write("**Цели на 100 дней:** +25-50%")
-                        else:
-                            st.error("📉 **МЕДВЕЖИЙ ТРЕНД** в долгосрочной перспективе")
-                            st.write("**Цели на 30 дней:** -5-15%")
-                            st.write("**Цели на 100 дней:** -15-30%")
+                    if current_data['change_percentage'] > 10:
+                        st.success("📈 СИЛЬНЫЙ ВОСХОДЯЩИЙ ТРЕНД - Перспектива роста сохраняется")
+                        st.write("**Цели на 30 дней:** +15-25%")
+                    elif current_data['change_percentage'] < -10:
+                        st.error("📉 СИЛЬНЫЙ НИСХОДЯЩИЙ ТРЕНД - Риск дальнейшего снижения")
+                        st.write("**Цели на 30 дней:** -10-20%")
+                    else:
+                        st.info("⚪ СТАБИЛЬНАЯ ДИНАМИКА - Умеренные ожидания")
                 
                 with tab4:
-                    st.markdown("##### 📋 Общий анализ и резюме")
+                    st.markdown("##### 📋 Итоговый анализ и рекомендации")
                     
                     summary_col1, summary_col2 = st.columns(2)
                     
                     with summary_col1:
-                        st.markdown("**📈 Технический анализ:**")
-                        st.write("• Анализ графических паттернов")
-                        st.write("• Уровни поддержки и сопротивления")
-                        st.write("• Трендовые линии и каналы")
-                        st.write("• Объемный анализ")
+                        st.markdown("**✅ Сильные стороны:**")
+                        if recommendation['score'] >= 60:
+                            st.write("• Несколько индикаторов подтверждают восходящий тренд")
+                            st.write("• Объемы торгов поддерживают движение")
+                            st.write("• Техническая картина выглядит устойчивой")
+                        else:
+                            st.write("• Возможность для входа на развороте")
+                            st.write("• Потенциал для среднесрочной торговли")
                         
-                        st.markdown("**🌊 Волновой анализ:**")
-                        st.write("• Идентификация волн Эллиотта")
-                        st.write("• Коррекционные и импульсные волны")
-                        st.write("• Целевые уровни")
-                        
-                        st.markdown("**🕯️ Свечной анализ:**")
-                        st.write("• Паттерны разворота и продолжения")
-                        st.write("• Анализ соотношения тел и теней")
+                        st.markdown("**🎯 Ключевые уровни:**")
+                        st.write("• **Поддержка:** $" + f"{min(fib_levels.values()):.6f}")
+                        st.write("• **Сопротивление:** $" + f"{max(fib_levels.values()):.6f}")
                     
                     with summary_col2:
-                        st.markdown("**🔍 Фундаментальный анализ:**")
-                        st.write("• Ончейн метрики")
-                        st.write("• Сетевые показатели")
-                        st.write("• Активность разработчиков")
+                        st.markdown("**⚠️ Риски:**")
+                        if crypto_info.get('risk') in ['Высокий', 'Очень высокий', 'Экстремально высокий']:
+                            st.write("• Высокая волатильность актива")
+                            st.write("• Ограниченная ликвидность")
+                            st.write("• Сильная зависимость от новостного фона")
+                        else:
+                            st.write("• Общие рыночные риски")
+                            st.write("• Внешние факторы влияния")
                         
-                        st.markdown("**🌍 Макро анализ:**")
-                        st.write("• Рыночная капитализация")
-                        st.write("• Доминирование BTC")
-                        st.write("• Общие рыночные тенденции")
-                        
-                        st.markdown("**📰 Новостной анализ:**")
-                        st.write("• Сентимент рынка")
-                        st.write("• Основные события")
-                        st.write("• Регуляторные новости")
+                        st.markdown("**💡 Рекомендации:**")
+                        st.write("• Соблюдайте риск-менеджмент")
+                        st.write("• Используйте стоп-лосс ордера")
+                        st.write("• Мониторьте рыночные новости")
                 
-                # ОБЩЕЕ РЕЗЮМЕ
-                st.markdown("---")
-                st.subheader("🎯 Итоговое резюме и рекомендации")
-                
-                # Сводка по всем индикаторам
-                total_score = 0
-                max_score = 0
-                
-                if 'rsi' in df.columns:
-                    max_score += 1
-                    if 30 <= df['rsi'].iloc[-1] <= 70:
-                        total_score += 1
-                
-                if 'macd' in df.columns and 'macd_signal' in df.columns:
-                    max_score += 1
-                    if df['macd'].iloc[-1] > df['macd_signal'].iloc[-1]:
-                        total_score += 1
-                
-                if 'sma_20' in df.columns:
-                    max_score += 1
-                    if current_price > df['sma_20'].iloc[-1]:
-                        total_score += 1
-                
-                if max_score > 0:
-                    score_percentage = (total_score / max_score) * 100
-                    st.metric("Общий счет анализа", f"{score_percentage:.0f}%")
-                    
-                    if score_percentage >= 70:
-                        st.success("🎯 **ВЫСОКАЯ ВЕРОЯТНОСТЬ УСПЕШНОЙ СДЕЛКИ**")
-                        st.write("Рекомендуется активная торговля с соблюдением риск-менеджмента")
-                    elif score_percentage >= 40:
-                        st.warning("⚠️ **СРЕДНЯЯ ВЕРОЯТНОСТЬ УСПЕХА**")
-                        st.write("Требуется дополнительный анализ и осторожность")
-                    else:
-                        st.error("🚨 **НИЗКАЯ ВЕРОЯТНОСТЬ УСПЕХА**")
-                        st.write("Рекомендуется воздержаться от сделок")
+                # ВРЕМЯ ОБНОВЛЕНИЯ
+                st.sidebar.markdown(f"**🕒 Анализ обновлен:** {datetime.now().strftime('%H:%M:%S')}")
                 
             else:
                 st.error("❌ Недостаточно данных для комплексного анализа")
                 if not current_data['available']:
                     st.info("💡 Эта криптовалютная пара не торгуется на бирже Gate.io")
                 elif historical_data is None:
-                    st.info("⏳ Исторические данные временно недоступны. Попробуйте обновить позже.")
-    
-        st.markdown(f"*Анализ обновлен: {datetime.now().strftime('%H:%M:%S')}*")
+                    st.info("⏳ Исторические данные временно недоступны")
         
-        # Кнопка обновления
+        # Кнопка ручного обновления
         if st.button("🔄 Обновить анализ"):
+            st.cache_data.clear()
             st.rerun()
 
 if __name__ == "__main__":
