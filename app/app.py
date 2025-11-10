@@ -6,57 +6,55 @@ import time
 from datetime import datetime
 
 st.set_page_config(
-    page_title="Crypto Analysis",
+    page_title="Gate.io Crypto Analysis",
     page_icon="📊",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# Инициализация состояния для автообновления
+# Инициализация состояния
 if 'last_update' not in st.session_state:
     st.session_state.last_update = 0
 
 CRYPTO_PAIRS = ['DOGE_USDT', 'LINK_USDT', 'SEI_USDT', 'ALCH_USDT', 'GIGGLE_USDT', 'COAI_USDT', 'FARTCOIN_USDT']
 
 def get_gateio_data(symbol):
-    """
-    Получение данных с Gate.io API.
-    Внимание: Некоторые пары (COAI, FARTCOIN и др.) могут не существовать,
-    поэтому для них будет возвращена ошибка.
-    """
+    """Получение реальных данных с Gate.io API"""
     try:
         url = f"https://api.gateio.ws/api/v4/spot/tickers?currency_pair={symbol}"
         response = requests.get(url, timeout=10)
         
         if response.status_code == 200:
             data = response.json()
-            if isinstance(data, list) and len(data) > 0:
+            if data and len(data) > 0:
                 ticker = data[0]
                 return {
                     'symbol': symbol,
-                    'last': float(ticker.get('last', 0)),
-                    'change_percentage': float(ticker.get('change_percentage', 0)),
-                    'high_24h': float(ticker.get('high_24h', 0)),
-                    'low_24h': float(ticker.get('low_24h', 0)),
-                    'quote_volume': float(ticker.get('quote_volume', 0)),
+                    'last': float(ticker['last']),
+                    'change_percentage': float(ticker['change_percentage']),
+                    'high_24h': float(ticker['high_24h']),
+                    'low_24h': float(ticker['low_24h']),
+                    'quote_volume': float(ticker['quote_volume']),
+                    'base_volume': float(ticker['base_volume']),
                     'source': 'Gate.io',
                     'available': True
                 }
-        # Если пара не найдена (API возвращает пустой список или ошибку)
-        return {
-            'symbol': symbol,
-            'available': False,
-            'error': 'Пара не найдена на Gate.io'
-        }
     except Exception as e:
-        return {
-            'symbol': symbol,
-            'available': False,
-            'error': f'Ошибка запроса: {str(e)}'
-        }
+        st.error(f"Ошибка получения данных для {symbol}: {str(e)}")
+    
+    return {
+        'symbol': symbol,
+        'last': 0,
+        'change_percentage': 0,
+        'high_24h': 0,
+        'low_24h': 0,
+        'quote_volume': 0,
+        'source': 'Не доступно',
+        'available': False
+    }
 
-def main():
-    st.title("📊 Обзор криптовалютных пар")
-    st.markdown("Данные с биржи Gate.io")
+def main_page():
+    st.title("📊 Анализ криптовалют - Gate.io")
     
     # Автообновление
     auto_refresh = st.sidebar.checkbox("Автообновление (60 сек)", value=True)
@@ -67,52 +65,52 @@ def main():
             st.session_state.last_update = current_time
             st.rerun()
     
-    # Получение и отображение данных
-    for symbol in CRYPTO_PAIRS:
-        data = get_gateio_data(symbol)
-        
-        st.subheader(f"🔹 {symbol.replace('_', '/')}")
-        
-        if data['available']:
-            col1, col2, col3, col4 = st.columns(4)
+    # Получение данных
+    with st.spinner("Получение данных с Gate.io..."):
+        for symbol in CRYPTO_PAIRS:
+            data = get_gateio_data(symbol)
             
-            with col1:
-                st.metric(
-                    "Цена", 
-                    f"${data['last']:.6f}", 
-                    f"{data['change_percentage']:.2f}%"
-                )
+            st.subheader(f"🔹 {symbol.replace('_', '/')}")
             
-            with col2:
-                st.metric("Макс. 24ч", f"${data['high_24h']:.6f}")
+            if data['available']:
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric(
+                        "Текущая цена", 
+                        f"${data['last']:.6f}", 
+                        f"{data['change_percentage']:.2f}%"
+                    )
+                
+                with col2:
+                    st.metric("24ч Максимум", f"${data['high_24h']:.6f}")
+                
+                with col3:
+                    st.metric("24ч Минимум", f"${data['low_24h']:.6f}")
+                
+                with col4:
+                    st.metric("Объем 24ч", f"${data['quote_volume']:,.0f}")
+                
+                # Простой график (симуляция на основе текущей цены)
+                dates = pd.date_range(end=datetime.now(), periods=50, freq='H')
+                prices = [data['last'] * (1 + i * 0.001) for i in range(-25, 25)]
+                
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(x=dates, y=prices, mode='lines', name='Price'))
+                fig.update_layout(title=f'График цены {symbol.replace("_", "/")}', height=300)
+                st.plotly_chart(fig, use_container_width=True)
+                
+            else:
+                st.error("❌ Пара не торгуется на Gate.io или временно недоступна")
             
-            with col3:
-                st.metric("Мин. 24ч", f"${data['low_24h']:.6f}")
-            
-            with col4:
-                st.metric("Объем", f"${data['quote_volume']:,.0f}")
-            
-            # Простой график на основе изменения цены
-            chart_data = pd.DataFrame({
-                'Время': range(24),
-                'Цена': [data['last'] * (1 + data['change_percentage']/100 * i/24) for i in range(24)]
-            })
-            
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=chart_data['Время'], y=chart_data['Цена'], mode='lines', name='Цена'))
-            fig.update_layout(title=f"Динамика {symbol.replace('_', '/')}", height=300)
-            st.plotly_chart(fig, use_container_width=True)
-            
-        else:
-            st.error(f"❌ {data.get('error', 'Пара недоступна')}")
-        
-        st.markdown("---")
+            st.markdown("---")
     
-    # Время обновления и ручное обновление
+    # Время обновления
     st.sidebar.markdown(f"**Последнее обновление:** {datetime.now().strftime('%H:%M:%S')}")
+    
     if st.sidebar.button("🔄 Обновить вручную"):
         st.session_state.last_update = time.time()
         st.rerun()
 
 if __name__ == "__main__":
-    main()
+    main_page()
