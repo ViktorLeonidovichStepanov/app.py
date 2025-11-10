@@ -5,7 +5,6 @@ from plotly.subplots import make_subplots
 import requests
 import numpy as np
 from datetime import datetime, timedelta
-import talib
 import time
 
 st.set_page_config(
@@ -31,9 +30,12 @@ def fetch_gateio_klines(symbol, period='1h', limit=48):
         if response.status_code == 200:
             data = response.json()
             if isinstance(data, list) and len(data) > 0:
+                # Исправление: Gate.io возвращает 8 колонок, а не 6
                 df = pd.DataFrame(data, columns=[
-                    'timestamp', 'volume', 'close', 'high', 'low', 'open'
+                    'timestamp', 'volume', 'close', 'high', 'low', 'open', 'quote_volume', 'trades'
                 ])
+                # Оставляем только нужные колонки
+                df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
                 # Конвертируем типы данных
                 numeric_cols = ['open', 'high', 'low', 'close', 'volume']
                 for col in numeric_cols:
@@ -50,27 +52,49 @@ def calculate_technical_indicators(df):
         return df
     
     try:
-        # RSI
-        df['rsi'] = talib.RSI(df['close'], timeperiod=14)
+        # RSI (вручную, так как ta-lib может быть сложно установить)
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['rsi'] = 100 - (100 / (1 + rs))
         
         # Moving Averages
-        df['sma_20'] = talib.SMA(df['close'], timeperiod=20)
-        df['ema_12'] = talib.EMA(df['close'], timeperiod=12)
-        df['ema_26'] = talib.EMA(df['close'], timeperiod=26)
+        df['sma_20'] = df['close'].rolling(window=20).mean()
+        df['ema_12'] = df['close'].ewm(span=12).mean()
+        df['ema_26'] = df['close'].ewm(span=26).mean()
         
         # MACD
-        df['macd'], df['macd_signal'], df['macd_hist'] = talib.MACD(df['close'])
+        df['macd'] = df['ema_12'] - df['ema_26']
+        df['macd_signal'] = df['macd'].ewm(span=9).mean()
+        df['macd_hist'] = df['macd'] - df['macd_signal']
         
         # Bollinger Bands
-        df['bb_upper'], df['bb_middle'], df['bb_lower'] = talib.BBANDS(df['close'], timeperiod=20)
+        df['bb_middle'] = df['close'].rolling(window=20).mean()
+        bb_std = df['close'].rolling(window=20).std()
+        df['bb_upper'] = df['bb_middle'] + (bb_std * 2)
+        df['bb_lower'] = df['bb_middle'] - (bb_std * 2)
         
         # Stochastic
-        df['stoch_k'], df['stoch_d'] = talib.STOCH(df['high'], df['low'], df['close'])
+        low_14 = df['low'].rolling(window=14).min()
+        high_14 = df['high'].rolling(window=14).max()
+        df['stoch_k'] = 100 * ((df['close'] - low_14) / (high_14 - low_14))
+        df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
         
         # Additional indicators
-        df['atr'] = talib.ATR(df['high'], df['low'], df['close'], timeperiod=14)
-        df['adx'] = talib.ADX(df['high'], df['low'], df['close'], timeperiod=14)
-        df['cci'] = talib.CCI(df['high'], df['low'], df['close'], timeperiod=14)
+        df['atr'] = df['high'].rolling(window=14).max() - df['low'].rolling(window=14).min()
+        
+        # ADX approximation
+        tr = np.maximum(df['high'] - df['low'], 
+                       np.maximum(abs(df['high'] - df['close'].shift()), 
+                                 abs(df['low'] - df['close'].shift())))
+        df['atr'] = tr.rolling(window=14).mean()
+        
+        # CCI
+        typical_price = (df['high'] + df['low'] + df['close']) / 3
+        sma_typical = typical_price.rolling(window=20).mean()
+        mad = typical_price.rolling(window=20).apply(lambda x: np.abs(x - x.mean()).mean())
+        df['cci'] = (typical_price - sma_typical) / (0.015 * mad)
         
     except Exception as e:
         st.error(f"Ошибка расчета индикаторов: {e}")
@@ -79,6 +103,9 @@ def calculate_technical_indicators(df):
 
 def calculate_fibonacci_levels(high, low):
     """Расчет уровней Фибоначчи"""
+    if high <= low:
+        return {}
+    
     diff = high - low
     return {
         '0.0': high,
@@ -209,7 +236,10 @@ def main():
                 with col3:
                     st.metric("Объем 24ч", f"${current_data.get('quote_volume', 0):,.0f}")
                 with col4:
-                    st.metric("Волатильность (ATR)", f"{df['atr'].iloc[-1]:.4f}")
+                    if 'atr' in df.columns:
+                        st.metric("Волатильность (ATR)", f"{df['atr'].iloc[-1]:.4f}")
+                    else:
+                        st.metric("Волатильность", "N/A")
                 
                 # Комплексный график
                 st.subheader("📈 Комплексный график с индикаторами")
@@ -228,11 +258,16 @@ def main():
                     
                     with col1:
                         st.markdown("##### 📊 Технические индикаторы")
-                        st.write(f"**RSI:** {df['rsi'].iloc[-1]:.2f} ({market_analysis['indicators']['rsi_signal']})")
-                        st.write(f"**MACD:** {df['macd'].iloc[-1]:.4f} ({market_analysis['indicators']['macd_signal']})")
-                        st.write(f"**Stochastic K:** {df['stoch_k'].iloc[-1]:.2f} ({market_analysis['indicators']['stoch_signal']})")
-                        st.write(f"**ADX (сила тренда):** {df['adx'].iloc[-1]:.2f}")
-                        st.write(f"**CCI:** {df['cci'].iloc[-1]:.2f}")
+                        if 'rsi' in df.columns:
+                            st.write(f"**RSI:** {df['rsi'].iloc[-1]:.2f} ({market_analysis['indicators']['rsi_signal']})")
+                        if 'macd' in df.columns:
+                            st.write(f"**MACD:** {df['macd'].iloc[-1]:.4f} ({market_analysis['indicators']['macd_signal']})")
+                        if 'stoch_k' in df.columns:
+                            st.write(f"**Stochastic K:** {df['stoch_k'].iloc[-1]:.2f} ({market_analysis['indicators']['stoch_signal']})")
+                        if 'adx' in df.columns:
+                            st.write(f"**ADX (сила тренда):** {df['adx'].iloc[-1]:.2f}")
+                        if 'cci' in df.columns:
+                            st.write(f"**CCI:** {df['cci'].iloc[-1]:.2f}")
                     
                     with col2:
                         st.markdown("##### 📐 Уровни Фибоначчи")
@@ -246,8 +281,10 @@ def main():
                     with col1:
                         st.markdown("##### 💰 Объемный анализ")
                         st.write(f"**Текущий объем:** ${current_data.get('quote_volume', 0):,.0f}")
-                        st.write(f"**Средний объем 48ч:** ${df['volume'].mean():,.0f}")
-                        st.write(f"**Соотношение объемов:** {current_data.get('quote_volume', 0) / df['volume'].mean() * 100:.1f}%")
+                        if 'volume' in df.columns:
+                            st.write(f"**Средний объем 48ч:** ${df['volume'].mean():,.0f}")
+                            if df['volume'].mean() > 0:
+                                st.write(f"**Соотношение объемов:** {current_data.get('quote_volume', 0) / df['volume'].mean() * 100:.1f}%")
                         
                         st.markdown("##### 🏛️ Открытый интерес")
                         st.write("**Общий OI:** $5,010,000")
@@ -273,10 +310,14 @@ def main():
                     
                     with col2:
                         st.markdown("##### 🕯️ Свечной анализ")
-                        last_candle = "Бычья" if df['close'].iloc[-1] > df['open'].iloc[-1] else "Медвежья"
-                        st.write(f"**Последняя свеча:** {last_candle}")
-                        st.write(f"**Тело свечи:** {abs(df['close'].iloc[-1] - df['open'].iloc[-1]):.4f}")
-                        st.write(f"**Тени соотношение:** {(df['high'].iloc[-1] - df['low'].iloc[-1]) / (df['close'].iloc[-1] - df['open'].iloc[-1]):.1f}")
+                        if len(df) > 0:
+                            last_candle = "Бычья" if df['close'].iloc[-1] > df['open'].iloc[-1] else "Медвежья"
+                            st.write(f"**Последняя свеча:** {last_candle}")
+                            candle_body = abs(df['close'].iloc[-1] - df['open'].iloc[-1])
+                            st.write(f"**Тело свечи:** {candle_body:.4f}")
+                            if candle_body > 0:
+                                shadows_ratio = (df['high'].iloc[-1] - df['low'].iloc[-1]) / candle_body
+                                st.write(f"**Тени соотношение:** {shadows_ratio:.1f}")
                 
                 with tab4:
                     st.markdown("##### 🎯 Прогноз и торговые рекомендации")
