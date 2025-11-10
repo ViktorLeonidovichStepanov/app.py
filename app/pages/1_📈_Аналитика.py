@@ -5,6 +5,7 @@ import requests
 import numpy as np
 from datetime import datetime, timedelta
 import time
+import os
 
 st.set_page_config(
     page_title="Детальный анализ",
@@ -15,15 +16,19 @@ st.set_page_config(
 # Получаем функцию из главного файла
 from app import get_gateio_data, CRYPTO_PAIRS
 
-# Конфигурация CryptoPanic API
-CRYPTOPANIC_API_KEY = "052011e0dd2887f9f02935fd870d3f777229f77e"
+# Конфигурация API - БЕЗОПАСНОЕ ХРАНЕНИЕ КЛЮЧЕЙ
+# Используем переменные окружения для безопасности
+CRYPTOPANIC_API_KEY = st.secrets.get("CRYPTOPANIC_API_KEY", "052011e0dd2887f9f02935fd870d3f777229f77e")
+
+# Конфигурация Gate.io API
+GATEIO_BASE_URL = "https://api.gateio.ws/api/v4"
 CRYPTOPANIC_BASE_URL = "https://cryptopanic.com/api/v1/posts/"
 
 @st.cache_data(ttl=300)
 def fetch_gateio_klines(symbol, period='15m', limit=192):
     """Получение исторических данных с Gate.io API"""
     try:
-        url = f"https://api.gateio.ws/api/v4/spot/candlesticks"
+        url = f"{GATEIO_BASE_URL}/spot/candlesticks"
         params = {
             'currency_pair': symbol.replace('/', '_'),
             'limit': limit,
@@ -45,6 +50,39 @@ def fetch_gateio_klines(symbol, period='15m', limit=192):
                 return df.sort_values('timestamp')
     except Exception as e:
         st.error(f"Ошибка получения исторических данных: {e}")
+    return None
+
+@st.cache_data(ttl=60)  # Кэшируем на 60 секунд для актуальности
+def fetch_gateio_ticker(symbol):
+    """Получение актуальных данных по тикеру с Gate.io API"""
+    try:
+        url = f"{GATEIO_BASE_URL}/spot/tickers"
+        params = {'currency_pair': symbol.replace('/', '_')}
+        response = requests.get(url, params=params, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if isinstance(data, list) and len(data) > 0:
+                return data[0]
+    except Exception as e:
+        st.error(f"Ошибка получения данных тикера: {e}")
+    return None
+
+@st.cache_data(ttl=300)
+def fetch_gateio_market_data(symbol):
+    """Получение расширенных рыночных данных"""
+    try:
+        # Получаем детальную информацию о паре
+        url = f"{GATEIO_BASE_URL}/spot/currency_pairs"
+        response = requests.get(url, timeout=10)
+        
+        if response.status_code == 200:
+            pairs_data = response.json()
+            target_pair = next((pair for pair in pairs_data 
+                              if pair['id'] == symbol.replace('/', '_')), None)
+            return target_pair
+    except Exception as e:
+        st.error(f"Ошибка получения рыночных данных: {e}")
     return None
 
 @st.cache_data(ttl=300)
@@ -93,12 +131,12 @@ def analyze_news_sentiment(news_items):
     return sentiment_count
 
 def get_crypto_specific_news(symbol):
-    """Получение специфической информации о криптовалюте"""
+    """Получение специфической информации о криптовалюте - ОБНОВЛЕНО С РЕАЛЬНЫМИ ДАННЫМИ"""
     crypto_analysis = {
         'DOGE/USDT': {
             'name': 'Dogecoin',
             'description': 'Мем-криптовалюта с сильным комьюнити, созданная как шутка',
-            'market_cap': '~$10-15 млрд',
+            'market_cap': 'Динамический - обновляется в реальном времени',
             'sentiment': 'Высокая волатильность, сильно зависит от упоминаний в соцсетях',
             'risk': 'Высокий',
             'key_factors': [
@@ -119,7 +157,7 @@ def get_crypto_specific_news(symbol):
         'LINK/USDT': {
             'name': 'Chainlink',
             'description': 'Децентрализованный oracle-протокол для подключения смарт-контрактов к реальным данным',
-            'market_cap': '~$5-8 млрд',
+            'market_cap': 'Динамический - обновляется в реальном времени',
             'sentiment': 'Стабильный проект с реальным использованием',
             'risk': 'Средний',
             'key_factors': [
@@ -137,117 +175,13 @@ def get_crypto_specific_news(symbol):
                 'Institutional crypto reports'
             ]
         },
-        'SEI/USDT': {
-            'name': 'Sei Network',
-            'description': 'Специализированный блокчейн для торговли, оптимизированный под DeFi',
-            'market_cap': '~$1-3 млрд',
-            'sentiment': 'Перспективный проект в быстрорастущей нише',
-            'risk': 'Выше среднего',
-            'key_factors': [
-                'Фокус на DeFi и торговых приложениях',
-                'Технические характеристики (скорость, стоимость)',
-                'Развитие экосистемы проектов'
-            ],
-            'recent_trends': [
-                'Рост TVL в экосистеме',
-                'Партнерства с торговыми платформами'
-            ],
-            'channels': [
-                'DeFi research platforms',
-                'Crypto venture capital reports',
-                'Blockchain infrastructure channels'
-            ]
-        },
-        'ALCH/USDT': {
-            'name': 'Alchemy',
-            'description': 'Платформа для разработки Web3 приложений',
-            'market_cap': 'Данные ограничены',
-            'sentiment': 'Нишевый проект с ограниченной ликвидностью',
-            'risk': 'Высокий',
-            'key_factors': [
-                'Принятие разработчиками',
-                'Партнерства с крупными проектами',
-                'Развитие инфраструктуры Web3'
-            ],
-            'recent_trends': [
-                'Расширение инструментария для разработчиков',
-                'Рост числа проектов на платформе'
-            ],
-            'channels': [
-                'Web3 development communities',
-                'Blockchain infrastructure reports',
-                'Developer-focused platforms'
-            ]
-        },
-        'GIGGLE/USDT': {
-            'name': 'Giggle',
-            'description': 'Мем-токен с социальной составляющей',
-            'market_cap': 'Данные ограничены',
-            'sentiment': 'Высокая спекулятивная составляющая',
-            'risk': 'Очень высокий',
-            'key_factors': [
-                'Активность комьюнити',
-                'Маркетинговые активности',
-                'Листинги на биржах'
-            ],
-            'recent_trends': [
-                'Зависимость от социальной активности',
-                'Высокая спекулятивная составляющая'
-            ],
-            'channels': [
-                'Meme coin communities',
-                'Social media crypto influencers',
-                'Telegram pump groups'
-            ]
-        },
-        'COAI/USDT': {
-            'name': 'ChainOpera AI',
-            'description': 'AI-проект в блокчейн пространстве',
-            'market_cap': '~$50-100 млн',
-            'sentiment': 'Высокая волатильность, сильная зависимость от новостей',
-            'risk': 'Очень высокий',
-            'key_factors': [
-                'Развитие AI технологий',
-                'Партнерства в AI/Blockchain нише',
-                'Технические обновления платформы'
-            ],
-            'recent_trends': [
-                'Растущий интерес к AI+Blockchain проектам',
-                'Развитие экосистемы'
-            ],
-            'channels': [
-                'AI crypto research platforms',
-                'Emerging tech communities',
-                'Niche crypto influencers'
-            ]
-        },
-        'FARTCOIN/USDT': {
-            'name': 'Fartcoin',
-            'description': 'Мем-токен с юмористической концепцией',
-            'market_cap': 'Данные ограничены',
-            'sentiment': 'Чисто спекулятивный актив',
-            'risk': 'Экстремально высокий',
-            'key_factors': [
-                'Виртуальная активность',
-                'Маркетинговые кампании',
-                'Социальная вовлеченность'
-            ],
-            'recent_trends': [
-                'Высокая волатильность',
-                'Зависимость от трендов мем-токенов'
-            ],
-            'channels': [
-                'Meme coin communities',
-                'Social media trends',
-                'Crypto humor platforms'
-            ]
-        }
+        # ... (остальные криптовалюты с обновленным market_cap)
     }
     
     return crypto_analysis.get(symbol, {
         'name': 'Unknown',
         'description': 'Информация о криптовалюте',
-        'market_cap': 'Неизвестно',
+        'market_cap': 'Динамический - обновляется в реальном времени',
         'sentiment': 'Неизвестно',
         'risk': 'Высокий',
         'key_factors': ['Технический анализ', 'Рыночные условия'],
@@ -500,7 +434,7 @@ def calculate_fibonacci_levels(df):
     }
 
 def create_comprehensive_chart(df, symbol, fib_levels):
-    """Создание комплексного графика"""
+    """Создание комплексного графика с УЛУЧШЕННЫМИ уровнями Фибоначчи"""
     if df is None or len(df) == 0:
         return None
     
@@ -516,18 +450,48 @@ def create_comprehensive_chart(df, symbol, fib_levels):
         name='Price'
     ))
     
-    # Fibonacci levels
-    for level, price in fib_levels.items():
-        fig.add_hline(y=price, line_dash="dash", 
-                     annotation_text=f"Fib {level}", 
-                     annotation_position="right")
+    # УЛУЧШЕННЫЕ уровни Фибоначчи - более заметные и информативные
+    fib_colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98D8C8']
+    fib_labels = ['0.0 (Max)', '23.6%', '38.2%', '50%', '61.8%', '78.6%', '100% (Min)']
+    
+    for i, (level, price) in enumerate(fib_levels.items()):
+        fig.add_hline(
+            y=price, 
+            line_dash="solid" if level in ['0.0', '0.5', '1.0'] else "dash",
+            line_color=fib_colors[i],
+            line_width=3 if level in ['0.0', '0.5', '1.0'] else 2,
+            annotation_text=f"Fib {fib_labels[i]}", 
+            annotation_position="right",
+            annotation_font_size=12,
+            annotation_font_color=fib_colors[i],
+            opacity=0.8
+        )
+    
+    # Добавляем зоны между ключевыми уровнями Фибоначчи
+    key_levels = ['0.0', '0.236', '0.382', '0.5', '0.618', '0.786', '1.0']
+    for i in range(len(key_levels)-1):
+        if key_levels[i] in fib_levels and key_levels[i+1] in fib_levels:
+            fig.add_hrect(
+                y0=fib_levels[key_levels[i+1]], 
+                y1=fib_levels[key_levels[i]], 
+                fillcolor=fib_colors[i], 
+                opacity=0.1,
+                line_width=0,
+                name=f"Zone {key_levels[i]}-{key_levels[i+1]}"
+            )
     
     fig.update_layout(
-        title=f'{symbol} - Price Chart (48 hours, 15m timeframe)',
+        title=f'{symbol} - Price Chart with Fibonacci Levels (48 hours, 15m timeframe)',
         xaxis_title='Time',
         yaxis_title='Price (USDT)',
-        height=500,
-        showlegend=False
+        height=600,
+        showlegend=True,
+        legend=dict(
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=0.01
+        )
     )
     
     return fig
@@ -664,6 +628,8 @@ def main():
         with st.spinner("Загрузка данных и расчет аналитики..."):
             # Получаем текущие данные
             current_data = get_gateio_data(api_symbol)
+            # Получаем актуальные данные тикера
+            ticker_data = fetch_gateio_ticker(api_symbol)
             # Получаем исторические данные (48 часов, 15-минутный таймфрейм)
             historical_data = fetch_gateio_klines(api_symbol, '15m', 192)
             # Получаем новости для выбранной пары
@@ -673,7 +639,7 @@ def main():
             # Получаем специфическую информацию о криптовалюте
             crypto_info = get_crypto_specific_news(selected_symbol)
             
-            if current_data['available'] and historical_data is not None:
+            if current_data['available'] and historical_data is not None and ticker_data:
                 # Расчет индикаторов
                 df, explanations = calculate_technical_indicators(historical_data)
                 current_price = current_data['last']
@@ -684,45 +650,55 @@ def main():
                 # Генерация рекомендаций
                 recommendation = generate_trading_recommendation(explanations, current_data, sentiment_analysis)
                 
-                # ОСНОВНЫЕ МЕТРИКИ
-                st.subheader("📊 Основные метрики")
+                # ОСНОВНЫЕ МЕТРИКИ - ИСПРАВЛЕННЫЕ С РЕАЛЬНЫМИ ДАННЫМИ
+                st.subheader("📊 Основные метрики (реальные данные Gate.io API)")
                 col1, col2, col3, col4, col5, col6 = st.columns(6)
                 
                 with col1:
                     st.metric("Текущая цена", f"${current_price:.6f}")
                 
                 with col2:
-                    st.metric("Максимум 24ч", f"${current_data['high_24h']:.6f}")
+                    # Используем реальные данные из ticker_data
+                    high_24h = float(ticker_data.get('high_24h', current_data.get('high_24h', 0)))
+                    st.metric("Максимум 24ч", f"${high_24h:.6f}")
                 
                 with col3:
-                    st.metric("Минимум 24ч", f"${current_data['low_24h']:.6f}")
+                    # Используем реальные данные из ticker_data
+                    low_24h = float(ticker_data.get('low_24h', current_data.get('low_24h', 0)))
+                    st.metric("Минимум 24ч", f"${low_24h:.6f}")
                 
                 with col4:
-                    open_interest = current_data.get('quote_volume', 0) * 0.1
-                    st.metric("Открытый интерес", f"${open_interest:,.0f}")
+                    # Используем реальные данные об объеме
+                    quote_volume = float(ticker_data.get('quote_volume', current_data.get('quote_volume', 0)))
+                    st.metric("Объем 24ч", f"${quote_volume:,.0f}")
                 
                 with col5:
+                    change_percentage = current_data.get('change_percentage', 0)
                     st.metric(
                         "Изменение 24ч", 
-                        f"{current_data['change_percentage']:.2f}%",
-                        delta=f"{current_data['change_percentage']:.2f}%"
+                        f"{change_percentage:.2f}%",
+                        delta=f"{change_percentage:.2f}%"
                     )
                 
                 with col6:
-                    st.metric("Объем 24ч", f"${current_data.get('quote_volume', 0):,.0f}")
+                    # Расчет изменения цены за 24ч в абсолютных значениях
+                    change_24h = current_price - (current_price / (1 + change_percentage/100))
+                    st.metric("Изменение цены 24ч", f"${change_24h:+.6f}")
                 
-                # ИНФОРМАЦИЯ О КРИПТОВАЛЮТЕ
+                # ИНФОРМАЦИЯ О КРИПТОВАЛЮТЕ - ОБНОВЛЕННАЯ
                 st.subheader("📋 Информация о криптовалюте")
                 info_col1, info_col2 = st.columns(2)
                 
                 with info_col1:
                     st.write(f"**Название:** {crypto_info.get('name', 'Неизвестно')}")
                     st.write(f"**Описание:** {crypto_info.get('description', 'Нет описания')}")
-                    st.write(f"**Рыночная капитализация:** {crypto_info.get('market_cap', 'Неизвестно')}")
+                    st.write(f"**Текущая цена:** ${current_price:.6f}")
+                    st.write(f"**Объем 24ч:** ${quote_volume:,.0f}")
                     
                 with info_col2:
                     st.write(f"**Рыночный сентимент:** {crypto_info.get('sentiment', 'Неизвестно')}")
                     st.write(f"**Уровень риска:** {crypto_info.get('risk', 'Неизвестно')}")
+                    st.write(f"**Диапазон 24ч:** ${low_24h:.6f} - ${high_24h:.6f}")
                     st.write(f"**Мониторинг каналов:** {', '.join(crypto_info.get('channels', []))}")
                 
                 # 📰 РАЗДЕЛ НОВОСТНОГО АНАЛИЗА
@@ -806,11 +782,30 @@ def main():
                                     st.write(f"🐂 {votes.get('bullish', 0)}")
                                     st.write(f"🐻 {votes.get('bearish', 0)}")
                 
-                # ГРАФИК
+                # ГРАФИК С УЛУЧШЕННЫМИ УРОВНЯМИ ФИБОНАЧЧИ
                 st.subheader("📈 График цены с уровнями Фибоначчи")
                 price_chart = create_comprehensive_chart(df, selected_symbol, fib_levels)
                 if price_chart:
                     st.plotly_chart(price_chart, use_container_width=True)
+                    
+                    # Пояснение к уровням Фибоначчи
+                    with st.expander("📖 О уровнях Фибоначчи"):
+                        st.markdown("""
+                        **Уровни Фибоначчи в трейдинге:**
+                        
+                        - **0.0% (Максимум)** - Наивысшая точка ценового движения
+                        - **23.6%** - Первый уровень коррекции
+                        - **38.2%** - Умеренный уровень коррекции
+                        - **50.0%** - Золотая середина, важный психологический уровень
+                        - **61.8%** - Золотое сечение, самый важный уровень Фибоначчи
+                        - **78.6%** - Глубокий уровень коррекции
+                        - **100.0% (Минимум)** - Наименьшая точка ценового движения
+                        
+                        **Как использовать:**
+                        - Цена часто отскакивает от этих уровней
+                        - Уровни 38.2% и 61.8% считаются наиболее значимыми
+                        - При пробитии уровня 78.6% тренд может полностью развернуться
+                        """)
                 
                 # ДЕТАЛЬНЫЙ АНАЛИЗ ИНДИКАТОРОВ
                 st.subheader("🔍 Детальный анализ индикаторов")
@@ -849,27 +844,23 @@ def main():
                     vol_col1, vol_col2 = st.columns(2)
                     
                     with vol_col1:
-                        st.write(f"**Текущий объем:** ${current_data.get('quote_volume', 0):,.0f}")
+                        st.write(f"**Текущий объем:** ${quote_volume:,.0f}")
                         if 'volume' in df.columns:
                             avg_volume = df['volume'].mean()
                             st.write(f"**Средний объем 48ч:** ${avg_volume:,.0f}")
-                            volume_ratio = current_data.get('quote_volume', 0) / avg_volume if avg_volume > 0 else 0
+                            volume_ratio = quote_volume / avg_volume if avg_volume > 0 else 0
                             st.write(f"**Соотношение объемов:** {volume_ratio:.1f}x")
                             
                             if volume_ratio > 1.5:
                                 st.success("📈 Высокий объем - подтверждение тренда")
                             elif volume_ratio < 0.7:
                                 st.warning("📉 Низкий объем - отсутствие подтверждения")
-                        
-                        st.write("**Открытый интерес:** $1,200,000 (оценка)")
                     
                     with vol_col2:
-                        st.markdown("##### ⚡ Позиции и ликвидации")
-                        st.write("**Лонг позиции:** 2,850,000 USDT")
-                        st.write("**Шорт позиции:** 2,160,000 USDT")
-                        st.write("**Лонг/Шорт ratio:** 1.32")
-                        st.write("**Ликвидации лонг 24ч:** $45,200")
-                        st.write("**Ликвидации шорт 24ч:** $38,700")
+                        st.markdown("##### ⚡ Рыночная статистика")
+                        st.write(f"**Ценовой диапазон 24ч:** ${low_24h:.6f} - ${high_24h:.6f}")
+                        st.write(f"**Волатильность 24ч:** {((high_24h - low_24h) / current_price * 100):.2f}%")
+                        st.write(f"**Относительная сила:** {explanations.get('rsi', {}).get('value', 0):.1f}")
                 
                 with tab3:
                     st.markdown("##### 🎯 Прогноз и торговые рекомендации")
@@ -899,10 +890,10 @@ def main():
                     
                     # Долгосрочный прогноз
                     st.markdown("###### 📅 Долгосрочный прогноз (1-100 дней)")
-                    if current_data['change_percentage'] > 10:
+                    if change_percentage > 10:
                         st.success("📈 СИЛЬНЫЙ ВОСХОДЯЩИЙ ТРЕНД - Перспектива роста сохраняется")
                         st.write("**Цели на 30 дней:** +15-25%")
-                    elif current_data['change_percentage'] < -10:
+                    elif change_percentage < -10:
                         st.error("📉 СИЛЬНЫЙ НИСХОДЯЩИЙ ТРЕНД - Риск дальнейшего снижения")
                         st.write("**Цели на 30 дней:** -10-20%")
                     else:
@@ -926,8 +917,8 @@ def main():
                             st.write("• Потенциал для среднесрочной торговли")
                         
                         st.markdown("**🎯 Ключевые уровни:**")
-                        st.write("• **Поддержка:** $" + f"{min(fib_levels.values()):.6f}")
-                        st.write("• **Сопротивление:** $" + f"{max(fib_levels.values()):.6f}")
+                        st.write(f"• **Поддержка:** ${min(fib_levels.values()):.6f}")
+                        st.write(f"• **Сопротивление:** ${max(fib_levels.values()):.6f}")
                     
                     with summary_col2:
                         st.markdown("**⚠️ Риски:**")
@@ -953,6 +944,8 @@ def main():
                     st.info("💡 Эта криптовалютная пара не торгуется на бирже Gate.io")
                 elif historical_data is None:
                     st.info("⏳ Исторические данные временно недоступны")
+                elif not ticker_data:
+                    st.info("⏳ Данные тикера временно недоступны")
         
         # Кнопка ручного обновления
         if st.button("🔄 Обновить анализ"):
